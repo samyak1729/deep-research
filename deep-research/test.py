@@ -59,6 +59,7 @@ async def test_stream_research(query):
         search_query = subtask["search_query"]
         try:
             results = tavily.search(query=search_query, max_results=5)
+            print(f"Raw Tavily results for '{search_query}': {json.dumps(results['results'], indent=2)}")
             search_results.append({
                 "search_query": search_query,
                 "subtask": subtask["subtask"],
@@ -71,7 +72,7 @@ async def test_stream_research(query):
     # Step 3: Generate report
     search_summary = "\n".join([
         f"Subtask: {item['subtask']}\nSearch Query: {item['search_query']}\nResults:\n" +
-        "\n".join([f"- {result['title']}: {result['content']}" for result in item["results"]])
+        "\n".join([f"- {result['title']}: {result['content']} [URL: {result.get('url', 'Not Available')}]" for result in item["results"]])
         for item in search_results
     ])
     report_prompt = f"""
@@ -84,7 +85,7 @@ async def test_stream_research(query):
     - An introduction summarizing the topic and plan
     - Sections for each subtask with summarized findings and citations
     - A conclusion synthesizing key insights
-    Include citations in the format [Source: Title, URL].
+    For each citation, use the format [Source: Title, URL: <url>]. If a URL is 'Not Available', state [Source: Title, URL: Not Available]. Do not omit or replace URLs.
     """
     try:
         for chunk in task_model.generate_content(report_prompt, stream=True):
