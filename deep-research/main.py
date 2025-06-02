@@ -1,3 +1,6 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import google.generativeai as genai
 import google.api_core.exceptions
 from tavily import TavilyClient
@@ -6,11 +9,21 @@ from dotenv import load_dotenv
 import json
 import asyncio
 
+# Load environment variables
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_GENERATIVE_AI_API_KEY"))
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 thinking_model = genai.GenerativeModel("gemini-1.5-flash")
 task_model = genai.GenerativeModel("gemini-1.5-flash")
+
+app = FastAPI()
+
+class ResearchQuery(BaseModel):
+    query: str
+    provider: str = "google"
+    thinking_model: str = "gemini-1.5-flash"
+    task_model: str = "gemini-1.5-flash"
+    search_provider: str = "tavily"
 
 async def generate_plan(query):
     planning_prompt = f"""
@@ -47,12 +60,10 @@ async def generate_plan(query):
             ]
         }
 
-async def test_stream_research(query):
-    print("Starting research for:", query)
-    
+async def stream_research(query: str, provider: str, thinking_model_name: str, task_model_name: str, search_provider: str):
     # Step 1: Generate plan
     plan = await generate_plan(query)
-    print(f"Planning: {json.dumps(plan, indent=2)}")
+    yield f"data: Planning: {json.dumps(plan, indent=2)}\n\n"
 
     # Step 2: Perform web search
     search_results = []
@@ -65,7 +76,7 @@ async def test_stream_research(query):
                 "subtask": subtask["subtask"],
                 "results": results["results"]
             })
-            print(f"Search Results for '{search_query}': {json.dumps(results['results'], indent=2)}")
+            yield f"data: Search Results for '{search_query}': {json.dumps(results['results'], indent=2)}\n\n"
         except Exception as e:
             print(f"Error searching '{search_query}': {str(e)}")
             search_results.append({
@@ -73,6 +84,7 @@ async def test_stream_research(query):
                 "subtask": subtask["subtask"],
                 "results": []
             })
+            yield f"data: Error searching '{search_query}': {str(e)}\n\n"
 
     # Step 3: Generate report
     search_summary = "\n".join([
@@ -82,24 +94,52 @@ async def test_stream_research(query):
         for item in search_results
     ])
     report_prompt = f"""
-    Generate a comprehensive research report on {query} in markdown format. Use the following data:
+    Generate a detailed research report on {query} in markdown format using the following data:
     ## Research Plan
     {json.dumps(plan, indent=2)}
     ## Search Results
     {search_summary}
-    Structure the report with:
-    - An introduction summarizing the topic and plan
-    - Sections for each subtask with summarized findings and citations
-    - A conclusion synthesizing key insights
-    For each citation, use the format [Source: Title, URL: <url>]. If a URL is 'Not Available', state [Source: Title, URL: Not Available]. Do not omit or replace URLs.
+
+    Structure the report as follows:
+    - **Abstract**: A concise summary (100-150 words) of the research topic, objectives, and key findings.
+    - **Introduction**: Introduce the topic, its significance, and the research objectives based on the plan (150-200 words).
+    - **Research Findings**: For each subtask, create a dedicated section with:
+      - A clear heading matching the subtask description.
+      - An objective statement explaining the purpose of this research segment.
+      - Detailed findings (200-300 words per section) synthesizing the search results, highlighting key insights, and addressing the objective.
+      - Inline citations in the format [Source: Title, URL: <url>] or [Source: Title, URL: Not Available].
+    - **Discussion**: Analyze the findings across subtasks, comparing and contrasting results, identifying trends, and noting limitations (200-250 words).
+    - **Conclusion**: Summarize key insights, implications, and potential future research directions (150-200 words).
+    - **References**: A numbered list of all cited sources in the format:
+      1. Title, URL: <url>
+      2. Title, URL: Not Available
+      Do not omit or replace URLs.
+
+    Ensure the report is comprehensive, concise, and complete, with each section serving its research objective. Use clear, formal language suitable for an academic or professional audience.
     """
     try:
-        for chunk in task_model.generate_content(report_prompt, stream=True):
-            print(chunk.text)
+        async def stream_report():
+            for chunk in task_model.generate_content(report_prompt, stream=True):
+                yield f"data: {chunk.text}\n\n"
+        async for chunk in stream_report():
+            yield chunk
     except google.api_core.exceptions.ResourceExhausted as e:
-        print(f"Quota exceeded during report generation: {e}")
+        yield f"data: Quota exceeded during report generation: {str(e)}\n\n"
     except google.api_core.exceptions.GoogleAPIError as e:
-        print(f"API error in report generation: {e}")
+        yield f"data: API error in report generation: {str(e)}\n\n"
 
-if __name__ == "__main__":
-    asyncio.run(test_stream_research("effectiveness of accelerometry in early detection of Parkinson's disease"))
+@app.post("/api/sse")
+async def research_endpoint(query: ResearchQuery):
+    try:
+        return StreamingResponse(
+            stream_research(
+                query.query,
+                query.provider,
+                query.thinking_model,
+                query.task_model,
+                query.search_provider
+            ),
+            media_type="text/event-stream"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
