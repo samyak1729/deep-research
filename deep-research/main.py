@@ -5,7 +5,6 @@ import os
 from dotenv import load_dotenv
 import json
 import asyncio
-from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_GENERATIVE_AI_API_KEY"))
@@ -13,14 +12,9 @@ tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 thinking_model = genai.GenerativeModel("gemini-1.5-flash")
 task_model = genai.GenerativeModel("gemini-1.5-flash")
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_fixed(20),
-    retry=retry_if_exception_type(google.api_core.exceptions.ResourceExhausted)
-)
 async def generate_plan(query):
     planning_prompt = f"""
-    Create a structured research plan for the topic: {query}. Return valid JSON only, without any additional text, code fences, or markdown:
+    Return a structured research plan for the topic: "{query}" as valid JSON only, with no additional text, markdown, or code fences. Example:
     {{
       "plan": "Overall research plan description",
       "subtasks": [
@@ -34,23 +28,30 @@ async def generate_plan(query):
         }}
       ]
     }}
-    Ensure the response is valid JSON with at least two subtasks, each with a non-empty search_query relevant to the topic.
+    Ensure at least two subtasks, each with a non-empty search_query relevant to the topic.
     """
-    planning_response = thinking_model.generate_content(planning_prompt)
-    return json.loads(planning_response.text)
+    try:
+        planning_response = thinking_model.generate_content(planning_prompt)
+        plan = json.loads(planning_response.text)
+        return plan
+    except google.api_core.exceptions.GoogleAPIError as e:
+        print(f"API error in generate_plan: {e}")
+        raise
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"JSON parsing error: {e}")
+        return {
+            "plan": f"Default plan for {query}",
+            "subtasks": [
+                {"subtask": "Default subtask 1", "search_query": query},
+                {"subtask": "Default subtask 2", "search_query": f"{query} overview"}
+            ]
+        }
 
 async def test_stream_research(query):
     print("Starting research for:", query)
     
     # Step 1: Generate plan
-    try:
-        plan = await generate_plan(query)
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"JSON parsing error: {e}")
-        plan = {
-            "plan": f"Default plan for {query}",
-            "subtasks": [{"subtask": "Default subtask", "search_query": query}]
-        }
+    plan = await generate_plan(query)
     print(f"Planning: {json.dumps(plan, indent=2)}")
 
     # Step 2: Perform web search
@@ -67,11 +68,17 @@ async def test_stream_research(query):
             print(f"Search Results for '{search_query}': {json.dumps(results['results'], indent=2)}")
         except Exception as e:
             print(f"Error searching '{search_query}': {str(e)}")
+            search_results.append({
+                "search_query": search_query,
+                "subtask": subtask["subtask"],
+                "results": []
+            })
 
     # Step 3: Generate report
     search_summary = "\n".join([
         f"Subtask: {item['subtask']}\nSearch Query: {item['search_query']}\nResults:\n" +
-        "\n".join([f"- {result['title']}: {result['content']}" for result in item["results"]])
+        ("\n".join([f"- {result['title']}: {result['content']} [URL: {result.get('url', 'Not Available')}]" for result in item["results"]])
+         if item["results"] else "No results found.")
         for item in search_results
     ])
     report_prompt = f"""
@@ -84,13 +91,15 @@ async def test_stream_research(query):
     - An introduction summarizing the topic and plan
     - Sections for each subtask with summarized findings and citations
     - A conclusion synthesizing key insights
-    Include citations in the format [Source: Title, URL].
+    For each citation, use the format [Source: Title, URL: <url>]. If a URL is 'Not Available', state [Source: Title, URL: Not Available]. Do not omit or replace URLs.
     """
     try:
         for chunk in task_model.generate_content(report_prompt, stream=True):
             print(chunk.text)
     except google.api_core.exceptions.ResourceExhausted as e:
         print(f"Quota exceeded during report generation: {e}")
+    except google.api_core.exceptions.GoogleAPIError as e:
+        print(f"API error in report generation: {e}")
 
 if __name__ == "__main__":
     asyncio.run(test_stream_research("effectiveness of accelerometry in early detection of Parkinson's disease"))
