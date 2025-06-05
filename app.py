@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import requests
 import json
@@ -52,7 +53,8 @@ if submit_button:
                 report_placeholder = st.empty()
 
                 # Prepare request to backend
-                url = "http://localhost:8000/api/sse"
+                backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+                url = f"{backend_url}/api/sse"
                 payload = {
                     "query": research_query,
                     "provider": "google",
