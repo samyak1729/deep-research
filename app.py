@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Streamlit page configuration
-st.set_page_config(page_title="Deep Research Tool", layout="wide")
+st.set_page_config(page_title="Deep Research", layout="wide")
 
 # Initialize session state for API keys
 if "gemini_api_key" not in st.session_state:
@@ -19,7 +19,7 @@ if "tavily_api_key" not in st.session_state:
     st.session_state.tavily_api_key = ""
 
 # Title and description
-st.title("Deep Research Tool")
+st.title("Deep Research")
 st.markdown("Enter your API keys and research topic to generate a detailed research report.")
 
 # API key input section
@@ -55,12 +55,15 @@ if submit_button:
                 # Prepare request to backend
                 backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
                 url = f"{backend_url}/api/sse"
+               
                 payload = {
                     "query": research_query,
                     "provider": "google",
                     "thinking_model": "gemini-1.5-flash",
                     "task_model": "gemini-1.5-flash",
-                    "search_provider": "tavily"
+                    "search_provider": "tavily",
+                    "gemini_api_key": st.session_state.gemini_api_key,
+                    "tavily_api_key": st.session_state.tavily_api_key
                 }
                 headers = {"Content-Type": "application/json"}
 

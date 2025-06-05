@@ -21,8 +21,9 @@ class ResearchQuery(BaseModel):
     thinking_model: str = "gemini-1.5-flash"
     task_model: str = "gemini-1.5-flash"
     search_provider: str = "tavily"
+    gemini_api_key: str
     tavily_api_key: str
-    google_api_key: str
+
 
 # ---------- planning ----------
 async def generate_plan(query, thinking_model):
@@ -130,6 +131,11 @@ async def stream_research(query, provider, thinking_model_name, task_model_name,
 @app.post("/api/sse")
 async def research_endpoint(body: ResearchQuery):
     try:
+
+        # Dynamically configure keys
+        genai.configure(api_key=query.gemini_api_key)
+        tavily = TavilyClient(api_key=query.tavily_api_key)
+
         return StreamingResponse(
             stream_research(
                 body.query,
